@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-Launches the full MPC swarm — 9-drone DMPC version.
+Launches the MPC swarm — 5-drone version (cross topology).
 
-Uses acados-based per-vehicle MPC 
+Cross topology (subset of original 9-drone grid):
 
-Topology:
-        北
-   7  ──  3  ──  5
-   │     │     │
-   2  ──  0  ──  1     东
-   │     │     │
-   8  ──  4  ──  6
-        南
+             3 (north)
+             │
+   2 (west) ─ 0 (center) ─ 1 (east)
+             │
+             4 (south)
+
+  - 1 virtual_leader_node
+  - 5 mpc_node (drone_id=0..4)
+  - 1 arming_node
+
+Leader speed is 0.0 — drones should converge to a static cross at z=-5.
+After hover is verified, raise leader speed in steps (0.5 -> 1.0 -> 2.0).
 """
 
 from launch import LaunchDescription
@@ -19,86 +23,70 @@ from launch_ros.actions import Node
 
 
 # =====================================================================
-# Configuration  ==  IDENTICAL to v3, except LMI params replaced with MPC
+# Configuration
 # =====================================================================
 
-NUM_DRONES = 9
+NUM_DRONES = 5
 
+# Spawn positions in WORLD-NED (x=north, y=east, z=down).
+# Only 5 entries — must match NUM_DRONES.
 BIRTH_POSITIONS_FLAT = [
     0.0,  0.0, 0.0,   # 0: center
     0.0,  3.0, 0.0,   # 1: east
     0.0, -3.0, 0.0,   # 2: west
     3.0,  0.0, 0.0,   # 3: north
    -3.0,  0.0, 0.0,   # 4: south
-    3.0,  3.0, 0.0,   # 5: NE
-    3.0, -3.0, 0.0,   # 6: SE
-   -3.0,  3.0, 0.0,   # 7: NW
-   -3.0, -3.0, 0.0,   # 8: SW
 ]
 
 # Same shape as spawn = formation translates to wherever the leader goes.
 FORMATION_OFFSETS_FLAT = BIRTH_POSITIONS_FLAT
 
-# Sparse 4-connected grid — leader is implicit (NOT listed here).
+# Sparse cross topology — leader is implicit.
 NEIGHBOURS_PER_DRONE = {
-    0: [1, 2, 3, 4],
-    1: [0, 5, 6],
-    2: [0, 7, 8],
-    3: [0, 5, 7],
-    4: [0, 6, 8],
-    5: [1, 3],
-    6: [1, 4],
-    7: [2, 3],
-    8: [2, 4],
+    0: [1, 2, 3, 4],        # center sees all 4 arms
+    1: [0],                 # east sees center
+    2: [0],                 # west sees center
+    3: [0],                 # north sees center
+    4: [0],                 # south sees center
 }
 
-# ----------------------------------------------------------------------
-# Per-drone params for the MPC controller.
-# ----------------------------------------------------------------------
 COMMON_PARAMS = {
-    # ---- topology / geometry (KEPT identical to v3) ----
     'num_drones': NUM_DRONES,
     'birth_positions_flat': BIRTH_POSITIONS_FLAT,
     'formation_offsets_flat': FORMATION_OFFSETS_FLAT,
 
-    # ---- altitude target (KEPT) ----
-    'target_alt': -5.0,                  # NED z, -5 = 5m above ground
+    'target_alt': -5.0,
+    'max_speed': 5.0,
+    'max_climb': 1.5,
+    'max_accel': 5.0,
 
-    # ---- safety / speed limits (KEPT — they are MPC hard constraints now) ----
-    'max_speed': 5.0,                    # |v_xy| upper bound, m/s
-    'max_climb': 1.5,                    # |v_z|  upper bound, m/s
-    'max_accel': 5.0,                    # |u|    upper bound, m/s^2
-
-    # ---- loop timing (KEPT) ----
-    'control_hz': 50.0,                  # 50 Hz outer loop, same as v3
+    'control_hz': 50.0,
     'neighbour_timeout': 1.0,
     'startup_zero_vel_frames': 30,
 
-    # ---- MPC-specific (NEW) ----
-    'mpc_horizon': 20,                   # N stages
-    'mpc_dt':      0.05,                 # stage length s; 20*0.05 = 1.0s look-ahead
-    'q_pos':       4.0,                  # tracking position weight
-    'q_vel':       1.0,                  # tracking velocity weight
-    'r_acc':       0.1,                  # action smoothness weight
-    'q_pos_terminal_scale': 10.0,        # terminal vs running pos weight ratio
-    'd_safe':      1.5,                  # min inter-agent distance, m
-    'w_collision': 200.0,                # soft-penalty weight for d_safe breach
+    # MPC weights — tuned values from this session
+    'mpc_horizon': 20,
+    'mpc_dt':      0.05,
+    'q_pos':       8.0,
+    'q_vel':       2.0,
+    'r_acc':       0.05,
+    'q_pos_terminal_scale': 2.0,
+    'd_safe':      1.5,
+    'w_collision': 500.0,
+    'w_formation': 0.5,
     'acados_build_dir': '/tmp/acados_di_mpc',
 }
 
 LEADER_PARAMS = {
-    'speed': 2.0,
+    'speed': 1.0,                    # static hover test first
     'altitude': -5.0,
     'publish_hz': 50.0,
-    # Rectangle 50m x 50m starting at origin
     'waypoints_flat': [0.0, 0.0,  0.0, 50.0,  50.0, 50.0,  50.0, 0.0],
 }
 
 ARMING_PARAMS = {
-    'num_drones': NUM_DRONES,
-    'setup_seconds': 25.0,               # bumped from 12 -> 25 because acados
-                                         # JIT-compiles the OCP on first call
-                                         # for each drone (~1-2s per drone)
+    'num_drones': NUM_DRONES,        # 5, must match
+    'setup_seconds': 20.0,           # acados compiles faster for 5 drones
     'arm_interval': 0.5,
 }
 
@@ -106,7 +94,6 @@ ARMING_PARAMS = {
 def generate_launch_description():
     nodes = []
 
-    # 1. Virtual leader (UNCHANGED)
     nodes.append(Node(
         package='mpc_control',
         executable='virtual_leader_node',
@@ -115,7 +102,6 @@ def generate_launch_description():
         parameters=[LEADER_PARAMS],
     ))
 
-    # 2. 9 MPC controllers (was: flock_controller_node)
     for i in range(NUM_DRONES):
         params = dict(COMMON_PARAMS)
         params['drone_id'] = i
@@ -128,7 +114,6 @@ def generate_launch_description():
             parameters=[params],
         ))
 
-    # 3. Arming node (UNCHANGED, except setup_seconds bumped above)
     nodes.append(Node(
         package='mpc_control',
         executable='arming_node',
