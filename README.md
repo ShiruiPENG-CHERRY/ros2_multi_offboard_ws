@@ -141,6 +141,23 @@ Pi 4B companion computer talking to a Pixhawk 6C over TELEM2 (serial,
 `udp4` agent. Real-flight bring-up is still in progress — the code in
 this repo has been validated in SITL only.
 
+## Results
+
+Two stages of the experimental 5-drone controller, both run in PX4 SITL + Gazebo.
+Same hardware/sim setup, same 5-drone cross topology — different controllers.
+
+### Earlier stage: consensus controller
+
+See [docs/results/consensus_5_drone/](docs/results/consensus_5_drone/).
+
+![5-drone trajectory (consensus)](docs/results/consensus_5_drone/trajectory_xy_overlay.png)
+
+### Later stage: acados-MPC controller
+
+See [docs/results/mpc_5_drone_hover/](docs/results/mpc_5_drone_hover/).
+
+![5-drone trajectory (MPC)](docs/results/mpc_5_drone_hover/trajectory_xy_overlay.png)
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
